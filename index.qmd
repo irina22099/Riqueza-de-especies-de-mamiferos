@@ -1,0 +1,200 @@
+---
+title: "Riqueza de especies de mamiferos"
+author: "Irina Pérez y Paulina Muriillo"
+format:
+  html:
+    theme: journal
+    lang: es
+    toc: true
+---
+# Introducción
+
+# Carga de Paquetes
+```{r}
+#| label: carga-paquetes
+#| Warning: false
+#| message: false
+
+
+# Carga de paquetes
+library(tidyverse)
+library(DT)
+library(plotly)
+library(ggplot2)
+library(sf)
+library(rgdal)
+library(raster)
+library(terra)
+library(leaflet)
+library(leaflet.extras)
+library(leafem)
+library(ggthemes)
+library(hrbrthemes)
+library(viridisLite)
+library(readr)
+library(RColorBrewer)
+```
+
+# Carga de Datos
+```{r}
+#| label: carga-datos
+#| warning: false
+#| message: false
+#| code-fold: true 
+
+# Carga de datos de regiones
+regiones <-
+  st_read(
+    dsn = "regiones_socioeconomicas_simp_10m.geojson",
+    quiet = TRUE
+          )|>
+  st_transform(4326)
+
+# Carga de datos de mamiferos
+mamiferos <-
+  st_read("mamiferos.csv",
+          options = c(
+      "X_POSSIBLE_NAMES=decimalLongitude", 
+      "Y_POSSIBLE_NAMES=decimalLatitude"
+    ),
+    quiet = TRUE
+  )
+# Asignacion de CRS WGS84
+st_crs(mamiferos) <- 4326
+```
+
+# Tabla de riqueza de especies de mamíferos en regiones socioeconómicas
+```{r}
+#| label: tabla-mamiferos
+#| warning: false
+#| message: false
+#| code-fold: true 
+
+# Unión espacial de mamiferos y regiones
+mamiferos_union_regiones <- 
+  st_join(
+    x = mamiferos,
+    y = dplyr::select(regiones, region),
+    join = st_within
+  )
+
+# Conteo de la cantidad de especies de mamiferos en regiones
+riqueza_especies_mamiferos_regiones <-
+  mamiferos_union_regiones |>
+  st_drop_geometry() |>
+  group_by(region) |>
+  summarize(riqueza_especies_mamiferos = n_distinct(species, na.rm = TRUE))
+
+# Unión (no espacial) de regiones y riqueza de especies
+regiones_union_riqueza <-
+  left_join(
+    x = regiones,
+    y = dplyr::select(riqueza_especies_mamiferos_regiones, region, riqueza_especies_mamiferos),
+    by = "region"
+  ) |>
+  replace_na(list(riqueza_especies_mamiferos = 0))
+
+# Despliegue de los datos de riqueza de especies en regiones
+regiones_union_riqueza |>
+  st_drop_geometry() |>
+  dplyr::select(region, riqueza_especies_mamiferos) |>
+  arrange(desc(riqueza_especies_mamiferos)) |>
+  datatable(
+    colnames = c("Región", "Riqueza de Especies de Mamíferos"),
+    options = list(
+      pageLength = 5,
+      language = list(url = '//cdn.datatables.net/plug-ins/1.10.11/i18n/Spanish.json')
+    )
+  )
+```
+
+# Mapa de riqueza de especies de mamíferos en regiones socioeconómicas
+```{r}
+#| label: mapa
+#| warning: false
+#| message: false
+#| code-fold: true 
+
+# Paleta de colores de riqueza de especies
+colores_riqueza_especies <-
+  colorNumeric(
+    palette = "Reds",
+    domain = regiones_union_riqueza$riqueza_especies_mamiferos,
+    na.color = "transparent"
+  )
+
+# Paleta de colores de especies
+colores_especies <- colorFactor(
+  palette = viridis(length(unique(mamiferos$species))), 
+  domain = mamiferos$species
+)
+
+# Mapa leaflet
+leaflet() |>
+  setView(
+    lng = -84.19452,
+    lat = 9.572735,
+    zoom = 7) |>
+  addTiles(group = "Mapa general (OpenStreetMap)") |>
+  addProviderTiles(
+    providers$Esri.WorldImagery, 
+    group = "Imágenes satelitales (ESRI World Imagery)"
+  ) |> 
+  addPolygons(
+    data = regiones_union_riqueza,
+    fillColor = ~ colores_riqueza_especies(regiones_union_riqueza$riqueza_especies_mamiferos),
+    fillOpacity = 0.8,
+    color = "black",
+    stroke = TRUE,
+    weight = 1.0,
+    popup = paste(
+      paste("<strong>Región:</strong>", regiones_union_riqueza$region),
+      paste("<strong>Riqueza de especies:</strong>", regiones_union_riqueza$riqueza_especies_mamiferos),
+      sep = '<br/>'
+    ),
+    group = "Riqueza de especies"
+  ) |>
+  addScaleBar(
+    position = "bottomleft", 
+    options = scaleBarOptions(imperial = FALSE)
+  ) |>    
+  addLegend(
+    position = "bottomleft",
+    pal = colores_riqueza_especies,
+    values = regiones_union_riqueza$riqueza_especies_mamiferos,
+    group = "Riqueza de especies",
+    title = "Riqueza de especies"
+  ) |>
+  addCircleMarkers(
+    data = mamiferos,
+    stroke = F,
+    radius = 4,
+    fillColor = ~colores_especies(mamiferos$species),
+    fillOpacity = 1.0,
+    popup = paste(
+      paste0("<strong>Especie: </strong>", mamiferos$species),
+      paste0("<strong>Región: </strong>", mamiferos$region),
+      paste0("<strong>Fecha: </strong>", mamiferos$eventDate),
+      paste0("<strong>Fuente: </strong>", mamiferos$institutionCode),
+      paste0("<a href='", mamiferos$occurrenceID, "'>Más información</a>"),
+      sep = '<br/>'
+    ),    
+    group = "Registros de presencia"
+  ) |>  
+  addLayersControl(
+    baseGroups = c(
+      "Mapa general (OpenStreetMap)", 
+      "Imágenes satelitales (ESRI World Imagery)"
+    ),
+    overlayGroups = c(
+      "Riqueza de especies",
+      "Registros de presencia"
+    )
+  ) |>
+  addResetMapButton() |>
+  addSearchOSM() |>
+  addMouseCoordinates() |>
+  addFullscreenControl() |>
+  hideGroup("Registros de presencia") 
+```
+
